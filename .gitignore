@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+node_modules/
+web/dist/
+artifacts/*
+!artifacts/.gitkeep
+.deploy/
+*.log
+.playwright-cli/
+output/
+
+.vendor/

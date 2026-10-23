@@ -1,0 +1,141 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Puroseka semantic context PoC - existing Learner Lab VPC and LabRole
+Parameters:
+  VpcId: {Type: AWS::EC2::VPC::Id}
+  SubnetIds: {Type: 'List<AWS::EC2::Subnet::Id>'}
+  BrowserCidr: {Type: String, AllowedPattern: '[0-9.]+/[0-9]+'}
+  LabRoleArn: {Type: String}
+  ImageUri: {Type: String, Default: ''}
+  DesiredCount: {Type: Number, Default: 0, AllowedValues: [0, 1]}
+  TargetGroupArn: {Type: String, Default: ''}
+  PublicOrigin: {Type: String, Default: ''}
+Conditions:
+  HasImage: !Not [!Equals [!Ref ImageUri, '']]
+  HasGateway: !Not [!Equals [!Ref TargetGroupArn, '']]
+Resources:
+  Artifacts:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      BucketEncryption: {ServerSideEncryptionConfiguration: [{ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}}]}
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      EmptyOnDelete: true
+      ImageScanningConfiguration: {ScanOnPush: true}
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep three images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}'
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties: {RetentionInDays: 7}
+  Cluster:
+    Type: AWS::ECS::Cluster
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PoC browser access from demonstrator IP only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress: [{IpProtocol: tcp, FromPort: 8000, ToPort: 8000, CidrIp: !Ref BrowserCidr}]
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL reachable only from PoC task
+      VpcId: !Ref VpcId
+      SecurityGroupIngress: [{IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref AppSecurityGroup}]
+  DatabaseSubnets:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Existing lab subnets, database has no public endpoint
+      SubnetIds: !Ref SubnetIds
+  DatabaseAdminSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      GenerateSecretString: {SecretStringTemplate: '{"username":"postgres"}', GenerateStringKey: password, PasswordLength: 32, ExcludePunctuation: true}
+  AppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      GenerateSecretString: {SecretStringTemplate: '{"username":"puroseka_reader"}', GenerateStringKey: password, PasswordLength: 32, ExcludePunctuation: true}
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Engine: postgres
+      EngineVersion: '16.15'
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: '20'
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: false
+      PubliclyAccessible: false
+      DBName: puroseka
+      MasterUsername: postgres
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseAdminSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DatabaseSubnets
+      VPCSecurityGroups: [!Ref DatabaseSecurityGroup]
+      BackupRetentionPeriod: 1
+      DeleteAutomatedBackups: true
+      DeletionProtection: false
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Condition: HasImage
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !Ref LabRoleArn
+      TaskRoleArn: !Ref LabRoleArn
+      RuntimePlatform: {CpuArchitecture: X86_64, OperatingSystemFamily: LINUX}
+      ContainerDefinitions:
+        - Name: app
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings: [{ContainerPort: 8000, Protocol: tcp}]
+          Environment:
+            - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: APP_SECRET_ARN, Value: !Ref AppSecret}
+            - {Name: PUBLIC_ORIGIN, Value: !Ref PublicOrigin}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: {awslogs-group: !Ref Logs, awslogs-region: !Ref 'AWS::Region', awslogs-stream-prefix: app}
+          HealthCheck:
+            Command: [CMD-SHELL, 'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:8000/api/health'',timeout=5)"']
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 60
+  Service:
+    Type: AWS::ECS::Service
+    Condition: HasImage
+    DependsOn: Database
+    Properties:
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref Task
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      LoadBalancers: !If
+        - HasGateway
+        - [{TargetGroupArn: !Ref TargetGroupArn, ContainerName: app, ContainerPort: 8000}]
+        - !Ref 'AWS::NoValue'
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker: {Enable: true, Rollback: true}
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref AppSecurityGroup]
+Outputs:
+  Bucket: {Value: !Ref Artifacts}
+  RepositoryUri: {Value: !GetAtt Repository.RepositoryUri}
+  ClusterArn: {Value: !GetAtt Cluster.Arn}
+  AppSecurityGroup: {Value: !Ref AppSecurityGroup}
+  DatabaseHost: {Value: !GetAtt Database.Endpoint.Address}
+  DatabaseId: {Value: !Ref Database}
+  AdminSecretArn: {Value: !Ref DatabaseAdminSecret}
+  AppSecretArn: {Value: !Ref AppSecret}
+  LogGroup: {Value: !Ref Logs}
+  ServiceName: {Condition: HasImage, Value: !GetAtt Service.Name}
+  TaskDefinition: {Condition: HasImage, Value: !Ref Task}

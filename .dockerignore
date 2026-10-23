@@ -1,0 +1,17 @@
+.env
+.env.*
+.git
+.venv
+.deploy
+node_modules
+web/node_modules
+web/dist
+__pycache__
+**/__pycache__
+.pytest_cache
+artifacts/*.log
+artifacts/profile.txt
+
+.vendor
+output
+.playwright-cli
