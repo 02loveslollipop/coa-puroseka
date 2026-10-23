@@ -22,6 +22,7 @@ import { Sources, Ontology, Playground } from "./pages";
 import { api, Catalog } from "./api";
 import { TokenSettings } from "./token-settings";
 import { useAuth } from "./auth";
+import { repositoryLink } from "./project";
 
 export default function App() {
   const { user, signOut } = useAuth();
@@ -61,13 +62,7 @@ export default function App() {
               onClick: () => setDark(!dark),
             },
             { type: "menu-dropdown", text: user.username, items: [{ id: "logout", text: "Sign out" }], onItemClick: () => void signOut() },
-            {
-              type: "button",
-              text: "Cloudscape documentation",
-              href: "https://cloudscape.design/components/",
-              external: true,
-              externalIconAriaLabel: "Opens in a new tab",
-            },
+            repositoryLink,
           ]}
         />
       </div>

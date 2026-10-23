@@ -4,6 +4,12 @@ The default `/` route is a dedicated user chat, following the [Cloudscape genera
 
 COA source inspection, ontology, comparison and token-policy settings live under `/admin`. The shared predefined account is an administrator and can access both experiences. A future account with the `user` role can use chat but is denied administrative API routes. The backend enforces this distinction independently of navigation.
 
+Both the chat and administration headers include an external **GitHub repository** link to the public application source. The repository contains no datasets or generated artifacts; prepare those locally from your own source files.
+
+## Removing a conversation
+
+Select a conversation under Recent chats and choose **Delete chat** in the sidebar. The confirmation names the selected conversation; Cancel preserves it. Confirming removes its text and A/B responses from this browser's account-specific history, then opens another saved chat. Deleting the last chat opens a fresh conversation with the same agent mode. Deletion is disabled while a response is running. It does not delete server-side job/review records, reset usage, or change the token policy.
+
 ## Response variants and A/B testing
 
 The chat sidebar contains a **Response agent** selector: **No enhancement** supplies the physical database schema, while **Enhanced** adds the fixed ontology, semantic rules and NL2SQL examples. The sidebar also contains the **A/B testing** toggle. Both variants use the same `ministral-8b-latest` model, query safety checks and data. Changing the selection opens a separate conversation so enhanced responses do not enter the other variant's chat history. Existing saved chats remain available.

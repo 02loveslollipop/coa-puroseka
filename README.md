@@ -1,12 +1,16 @@
 # Puroseka Semantic Context PoC
 
+Public source repository: [02loveslollipop/coa-puroseka](https://github.com/02loveslollipop/coa-puroseka).
+
+This repository contains application code, CloudFormation templates, hand-authored ontology definitions and SQL examples. It does not distribute source datasets, generated data/ontology exports, translations, execution traces, deployment state, credentials or local run reports. Supply your own local dataset and prepare the ignored `artifacts/` directory before importing, running integration tests or building the deployment image.
+
 Chat endpoint: https://ad15hkc9md.execute-api.us-east-1.amazonaws.com · [COA administration](https://ad15hkc9md.execute-api.us-east-1.amazonaws.com/admin/sources). CloudFormation stacks manage the app, Cognito, and private HTTPS gateway. The HTTPS address persists when ECS replaces its task.
 
 A small adaptation of [AWS Context Ontology Accelerator v0.3.7](https://github.com/aws/context-ontology-accelerator/tree/v0.3.7), using its React/Cloudscape application shell and Scan → Model → Serve organization. It is an independent PoC backend, not a deployment of the full upstream platform.
 
 The demonstration compares the same Mistral model and PostgreSQL query tool with **physical schema only** and with an additional **fixed ontology, semantic catalog, and domain NL2SQL examples**. It does not assume the enriched agent always wins. Inspect the generated query and returned rows rather than treating model wording as verified evidence.
 
-## What is included
+## What the prepared PoC supports
 
 - All five supplied metadata files, including their complete original JSON records: 180 events, 1,229 cards, 26 characters, 950 event–card associations, and 815 gachas.
 - Fifteen normalized source tables: the five primary tables plus card parameters/costs/master resources, event reward ranges/rewards, and gacha pool entries/pickups/behaviors/rarity rates. The full historical ranking stream is normalized into `ranking_observations`. A separate `entity_labels` table holds approximate translated titles and source English character names.
@@ -81,7 +85,7 @@ Use the stable HTTPS address printed by `status` for both chat and administratio
 .venv/bin/python scripts/aws.py status
 ```
 
-Data, semantic artifacts, sessions, token accounting and policy persist in RDS/S3/Secrets Manager. The ECS service starts a fresh task after a resume; its diagnostic public IP may change, while the HTTPS endpoint stays the same. User chat histories are stored per account in this browser; “New chat” opens a new conversation. COA playground histories stay separate by mode. Chats include up to three previous successful turns; comparisons start with no history in either mode.
+Data, semantic artifacts, sessions, token accounting and policy persist in RDS/S3/Secrets Manager. The ECS service starts a fresh task after a resume; its diagnostic public IP may change, while the HTTPS endpoint stays the same. User chat histories are stored per account in this browser; “New chat” opens a new conversation. Select a conversation in the sidebar and choose **Delete chat** to remove its local history after confirmation. Deleting the last chat opens a fresh conversation. This does not erase server execution records or token accounting. COA playground histories stay separate by mode. Chats include up to three previous successful turns; comparisons start with no history in either mode.
 
 Learner Lab session credentials expire. Refresh the AWS CLI credentials from the lab before running deployment/lifecycle commands again. Lab shutdown rules may affect service availability; this project does not assume Fargate bypasses those rules.
 

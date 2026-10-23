@@ -1,11 +1,12 @@
 import { lazy, ReactNode, Suspense, useEffect, useRef, useState } from "react";
-import { AppLayout, Alert, Box, Button, ColumnLayout, CopyToClipboard, FormField, Header, KeyValuePairs, LiveRegion, PromptInput, Select, SideNavigation, SpaceBetween, StatusIndicator, TextContent, Toggle, TopNavigation } from "@cloudscape-design/components";
+import { AppLayout, Alert, Box, Button, ColumnLayout, CopyToClipboard, FormField, Header, KeyValuePairs, LiveRegion, Modal, PromptInput, Select, SideNavigation, SpaceBetween, StatusIndicator, TextContent, Toggle, TopNavigation } from "@cloudscape-design/components";
 import { Avatar, ChatBubble, SupportPromptGroup } from "@cloudscape-design/chat-components";
 import { applyMode, Mode } from "@cloudscape-design/global-styles";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Activity, api, ExecutionProgress, runInference, TokenUsage } from "./api";
 import { useAuth } from "./auth";
+import { repositoryLink } from "./project";
 const ResponseExecution = lazy(() => import("./review"));
 
 type Variant = "base" | "enriched";
@@ -73,6 +74,7 @@ export function UserChat() {
   const storageKey = `puroseka.chat.${user.username}`;
   const [threads, setThreads] = useState<Thread[]>(() => loadThreads(storageKey));
   const [active, setActive] = useState(threads[0].id);
+  const [chatToDelete, setChatToDelete] = useState<Thread | null>(null);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState("");
@@ -136,6 +138,14 @@ export function UserChat() {
   function startNew(mode: ChatMode = current.mode) {
     const thread = newThread(mode); setThreads(all => [thread, ...all].slice(0, 20)); setActive(thread.id); setQuestion(""); stickToBottom.current = true;
   }
+  function deleteChat() {
+    if (!chatToDelete || busy) return;
+    const remaining = threads.filter(thread => thread.id !== chatToDelete.id);
+    if (!remaining.length) remaining.push(newThread(chatToDelete.mode));
+    setThreads(remaining);
+    if (active === chatToDelete.id) { setActive(remaining[0].id); setQuestion(""); stickToBottom.current = true; }
+    setChatToDelete(null); setAnnouncement("Chat deleted");
+  }
   return <div className="chat-page">
     <div id="chat-top-navigation"><TopNavigation identity={{ href: "/", title: "Puroseka" }} utilities={[
       { type: "button", text: dark ? "Light mode" : "Dark mode", onClick: () => setDark(!dark) },
@@ -143,11 +153,13 @@ export function UserChat() {
         ...(user.role === "admin" ? [{ id: "admin", text: "COA administration", href: "/admin/sources" }] : []),
         { id: "logout", text: "Sign out" },
       ], onItemClick: ({ detail }) => { if (detail.id === "logout") void signOut(); } },
+      repositoryLink,
     ]} /></div>
     <AppLayout headerSelector="#chat-top-navigation" toolsHide disableContentPaddings
       ariaLabels={{ navigation: "Chat settings and conversations", navigationToggle: "Toggle chat sidebar", navigationClose: "Close chat sidebar" }}
       navigation={<SpaceBetween size="l"><Box padding={{ top: "l", horizontal: "l" }}><SpaceBetween size="m">
         <Button fullWidth iconName="add-plus" disabled={busy} onClick={() => startNew()}>New chat</Button>
+        <Button fullWidth iconName="remove" disabled={busy} onClick={() => setChatToDelete(current)}>Delete chat</Button>
         <Header variant="h3">Chat settings</Header>
         <FormField label="Response agent" description="Changing the agent opens a new chat."><Select selectedOption={variantOptions.find(v => v.value === (ab ? preferredVariant : current.mode))!} options={variantOptions} disabled={busy || ab} onChange={({ detail }) => startNew(detail.selectedOption.value as Variant)} /></FormField>
         <Toggle checked={ab} disabled={busy} onChange={({ detail }) => startNew(detail.checked ? "ab" : preferredVariant)}>A/B testing</Toggle>
@@ -195,5 +207,13 @@ export function UserChat() {
         <LiveRegion hidden>{announcement}</LiveRegion>
       </div>}
     />
+    <Modal visible={!!chatToDelete} onDismiss={() => setChatToDelete(null)} header="Delete chat" closeAriaLabel="Close delete chat dialog" footer={
+      <SpaceBetween direction="horizontal" size="xs">
+        <Button variant="link" onClick={() => setChatToDelete(null)}>Cancel</Button>
+        <Button variant="primary" disabled={busy} onClick={deleteChat}>Delete chat</Button>
+      </SpaceBetween>
+    }>
+      Delete “{chatToDelete?.title}”? This removes the conversation and its responses from this browser.
+    </Modal>
   </div>;
 }
