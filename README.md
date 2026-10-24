@@ -144,3 +144,18 @@ Run `.venv/bin/python scripts/evaluate.py` with `DATABASE_URL` set to record act
 The UI uses the official Cloudscape React components and patterns directly. The components repository was pulled and inspected at commit `43480f9`. Native components now handle page layout, collection filtering/sorting/pagination, ranking charts, prompt input, chat messages, code views and copy actions. See [Cloudscape integration](docs/cloudscape-ui.md) for source provenance and package details.
 
 Use `.venv/bin/python scripts/aws.py deploy --app-only` for UI updates that preserve the imported data and current model configuration.
+
+
+## Current application parity
+
+This AWS version retains the existing CloudFormation, ECS/RDS deployment and optional Cognito authentication. It now includes the same Cloudscape login layout, draggable ontology explorer, bottom sidebar attribution, demo token-policy selector, 24-hour demo response retention, local token counting, six NL2SQL examples, bounded SQL repair and SQL firewall as the Heroku demonstration. SQL generation uses a bounded JSON schema and a 4,096-token output cap; answer synthesis retains 1,800 tokens. Account usage is preserved independently of these per-response caps.
+
+![Puroseka ontology relationships](docs/ontology-relations.svg)
+
+The diagram was regenerated from the supplied Turtle schema and screenshot: 16 classes, 15 object properties, 185 datatype properties and 850 schema triples. No source records are included in the public diagram.
+
+The public chat-only demo uses `demo@02labs.me` / `demo1234`. Its initial AWS allowance is 100,000 tokens per six-hour window, configurable in **Manage → Token limits → Public demo**. Demo authentication uses the local password hash even when the private administrator uses Cognito. Existing accounts, policies, consumed tokens and active reservations are preserved by setup. Demo responses expire after 24 hours; raw prompts, history and full Review traces are excluded. Cleanup runs on startup and every ten minutes while the application runs.
+
+The SQL firewall rejects writes, writable CTEs, private/system tables, row locks, custom functions/operators/types and unreviewed syntax before execution. Dataset connections start read-only with a `pg_catalog` search path; physical tables are explicitly qualified in `data`. The writable `control` connection is separate. The 15-second execution, one-second lock, 100-row and 24 KB evidence limits remain in place.
+
+For an existing AWS installation, run the access setup with the local operator credential to seed the demo without changing existing policies. Apply [infra/daily-index.sql](infra/daily-index.sql) separately using an operator connection outside a transaction; it adds the covering UTC-day index without changing source rows. Then use the existing CloudFormation application-only deployment. `DemoTokenLimit` and `DemoWindowSeconds` provide initial task configuration; dashboard policy changes take precedence for existing accounts.

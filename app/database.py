@@ -4,10 +4,17 @@ from psycopg.rows import dict_row
 from app.config import settings, artifact
 
 
+def schema_name():
+    return "data"
+
+
 @contextmanager
 def connection():
     with connect(
-        settings()["DATABASE_URL"], connect_timeout=10, row_factory=dict_row
+        settings()["DATABASE_URL"],
+        connect_timeout=10,
+        row_factory=dict_row,
+        options="-c default_transaction_read_only=on -c search_path=pg_catalog",
     ) as conn:
         yield conn
 

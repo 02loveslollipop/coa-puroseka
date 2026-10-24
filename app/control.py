@@ -1,14 +1,16 @@
 """Persistent application state, isolated from the SELECT-only data connection."""
 
-from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from uuid import uuid4
 
-import psycopg
-from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import psycopg
+from psycopg.rows import dict_row
 from app.config import settings
+from app.demo import DEMO_USERNAME, DEMO_RETENTION_HOURS
 
 
 @contextmanager
@@ -23,6 +25,34 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+def interrupt_jobs():
+    # One chat process owns jobs. Restarts never replay a paid model call.
+    with control_connection() as conn:
+        conn.execute("UPDATE control.jobs SET state='expired' WHERE state='running'")
+
+
+def clean_demo_jobs():
+    """TTL maintenance in the existing web process; accounting is independent."""
+    with control_connection() as conn:
+        conn.execute(
+            "DELETE FROM control.jobs WHERE username=%s AND created_at <= %s",
+            (DEMO_USERNAME, utcnow() - timedelta(hours=DEMO_RETENTION_HOURS)),
+        )
+        # Also remove sensitive fields from earlier demo jobs, including jobs
+        # written before this retention policy was deployed.
+        conn.execute(
+            "UPDATE control.jobs SET request='{}'::jsonb,"
+            "result=result-'_review'-'question' WHERE username=%s "
+            "AND (request <> '{}'::jsonb OR result ? '_review' OR result ? 'question')",
+            (DEMO_USERNAME,),
+        )
+        conn.execute(
+            "DELETE FROM control.reservations WHERE username=%s "
+            "AND state='charged' AND created_at <= %s",
+            (DEMO_USERNAME, utcnow() - timedelta(hours=DEMO_RETENTION_HOURS)),
+        )
+
+
 def account(username):
     with control_connection() as conn:
         return conn.execute(
@@ -33,12 +63,14 @@ def account(username):
 def _budget(conn, username):
     """Lock order is always account, then budget; all accounting uses this path."""
     user = conn.execute(
-        "SELECT * FROM control.accounts WHERE username=%s FOR UPDATE", (username,)
+        "SELECT * FROM control.accounts WHERE username=%s FOR UPDATE",
+        (username,),
     ).fetchone()
     if not user or not user["enabled"]:
         raise ValueError("Account unavailable")
     budget = conn.execute(
-        "SELECT * FROM control.budgets WHERE username=%s FOR UPDATE", (username,)
+        "SELECT * FROM control.budgets WHERE username=%s FOR UPDATE",
+        (username,),
     ).fetchone()
     now = utcnow()
     if now >= budget["resets_at"]:
@@ -160,7 +192,7 @@ def create_job(username, request):
         job = str(uuid4())
         conn.execute(
             "INSERT INTO control.jobs(id,username,request) VALUES (%s,%s,%s)",
-            (job, username, Jsonb(request)),
+            (job, username, Jsonb({} if username == DEMO_USERNAME else request)),
         )
         return job
 
@@ -174,18 +206,26 @@ def update_job_activity(job, activity):
 
 
 def finish_job(job, result):
+    demo_result = {k: v for k, v in result.items() if k not in {"_review", "question"}}
     with control_connection() as conn:
         conn.execute(
-            "UPDATE control.jobs SET state='done',result=%s WHERE id=%s",
-            (Jsonb(result), job),
+            "UPDATE control.jobs SET state='done',"
+            "result=CASE WHEN username=%s THEN %s ELSE %s END WHERE id=%s",
+            (DEMO_USERNAME, Jsonb(demo_result), Jsonb(result), job),
         )
 
 
 def get_job(username, job):
     with control_connection() as conn:
         row = conn.execute(
-            "SELECT id,state,result,created_at FROM control.jobs WHERE id=%s AND username=%s",
-            (job, username),
+            "SELECT id,state,result,created_at FROM control.jobs "
+            "WHERE id=%s AND username=%s AND (username<>%s OR created_at>%s)",
+            (
+                job,
+                username,
+                DEMO_USERNAME,
+                utcnow() - timedelta(hours=DEMO_RETENTION_HOURS),
+            ),
         ).fetchone()
         if (
             row

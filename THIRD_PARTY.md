@@ -9,3 +9,5 @@ Cloudscape Design System, React, React Flow, React Markdown, FastAPI, Psycopg, S
 Dataset ownership and source provenance remain with the supplied metadata; this project does not assert ownership or official game affiliation. Generated translations are approximate convenience labels, not official localization.
 
 The UI now consumes Cloudscape components directly, following its official repository README and patterns. Source inspection checkout: `cloudscape-design/components` at `43480f95a039d3f48a35d13f6ec44df4e4830e2f`. The application uses the official npm packages for components, global styles, design tokens, collection hooks, code view and chat components. Exact versions are in `web/package-lock.json`. Cloudscape packages are Apache-2.0.
+
+The current UI also uses d3-force (ISC) for graph layout. Local prompt counting uses tiktoken, with a checksum-pinned public Ministral Tekken vocabulary. Versions are pinned in the dependency files.

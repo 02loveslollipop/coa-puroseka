@@ -8,6 +8,7 @@ from psycopg import sql
 
 from app.auth import password_hash
 from app.config import settings
+from app.demo import DEMO_USERNAME
 
 
 def run():
@@ -32,6 +33,8 @@ def run():
     password = cfg.get("ADMIN_PASSWORD") or cfg.get("CHAT_PASSWORD")
     if not username or not password:
         raise RuntimeError("Set the shared account username and password in .env")
+    if username == DEMO_USERNAME:
+        raise RuntimeError("The public demo cannot be the private administrator")
     if len(password) < 12:
         raise RuntimeError(
             "The shared account password must contain at least 12 characters"
@@ -90,6 +93,12 @@ def run():
             if cfg.get("AUTH_PROVIDER", "local") == "local"
             else None
         )
+        demo = conn.execute(
+            "SELECT role FROM control.accounts WHERE username=%s FOR UPDATE",
+            (DEMO_USERNAME,),
+        ).fetchone()
+        if demo and demo[0] != "user":
+            raise RuntimeError("Refusing to alter a privileged demo account")
         conn.execute(
             "INSERT INTO control.accounts(username,role,password_hash,limit_enabled,token_limit,window_seconds) "
             "VALUES (%s,'admin',%s,false,%s,%s) ON CONFLICT(username) DO UPDATE SET role='admin',password_hash=EXCLUDED.password_hash",
@@ -105,11 +114,35 @@ def run():
             (username,),
         )
         conn.execute(
+            "INSERT INTO control.accounts(username,role,password_hash,limit_enabled,token_limit,window_seconds) "
+            "VALUES (%s,'user',%s,true,%s,%s) ON CONFLICT(username) DO NOTHING",
+            (
+                DEMO_USERNAME,
+                password_hash("demo1234"),
+                int(cfg.get("DEMO_TOKEN_LIMIT", "100000")),
+                int(cfg.get("DEMO_WINDOW_SECONDS", "21600")),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO control.budgets(username,resets_at) SELECT username,now()+window_seconds*interval '1 second' FROM control.accounts WHERE username=%s ON CONFLICT DO NOTHING",
+            (DEMO_USERNAME,),
+        )
+        conn.execute(
             sql.SQL("GRANT USAGE ON SCHEMA control TO {}").format(sql.Identifier(role))
         )
         conn.execute(
             sql.SQL(
                 "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA control TO {}"
+            ).format(sql.Identifier(role))
+        )
+        conn.execute(
+            sql.SQL("REVOKE INSERT,UPDATE,DELETE ON control.accounts FROM {}").format(
+                sql.Identifier(role)
+            )
+        )
+        conn.execute(
+            sql.SQL(
+                "GRANT UPDATE(limit_enabled,token_limit,window_seconds) ON control.accounts TO {}"
             ).format(sql.Identifier(role))
         )
         conn.execute(

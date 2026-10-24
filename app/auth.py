@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError
 from fastapi import HTTPException, Request
 
 from app.config import settings
+from app.demo import DEMO_USERNAME
 from app.control import account, control_connection, utcnow
 
 COOKIE = "coa_session"
@@ -63,7 +64,7 @@ def login(username, password, ip):
     cfg = settings()
     user = account(username)
     valid = False
-    if cfg.get("AUTH_PROVIDER", "local") == "cognito":
+    if cfg.get("AUTH_PROVIDER", "local") == "cognito" and username != DEMO_USERNAME:
         client_id, client_secret = (
             cfg["COGNITO_CLIENT_ID"],
             cfg["COGNITO_CLIENT_SECRET"],

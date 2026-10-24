@@ -9,6 +9,8 @@ Parameters:
   DesiredCount: {Type: Number, Default: 0, AllowedValues: [0, 1]}
   TargetGroupArn: {Type: String, Default: ''}
   PublicOrigin: {Type: String, Default: ''}
+  DemoTokenLimit: {Type: Number, Default: 100000, MinValue: 1, MaxValue: 1000000000}
+  DemoWindowSeconds: {Type: Number, Default: 21600, MinValue: 60, MaxValue: 2592000}
 Conditions:
   HasImage: !Not [!Equals [!Ref ImageUri, '']]
   HasGateway: !Not [!Equals [!Ref TargetGroupArn, '']]
@@ -96,6 +98,8 @@ Resources:
             - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
             - {Name: APP_SECRET_ARN, Value: !Ref AppSecret}
             - {Name: PUBLIC_ORIGIN, Value: !Ref PublicOrigin}
+            - {Name: DEMO_TOKEN_LIMIT, Value: !Ref DemoTokenLimit}
+            - {Name: DEMO_WINDOW_SECONDS, Value: !Ref DemoWindowSeconds}
           LogConfiguration:
             LogDriver: awslogs
             Options: {awslogs-group: !Ref Logs, awslogs-region: !Ref 'AWS::Region', awslogs-stream-prefix: app}

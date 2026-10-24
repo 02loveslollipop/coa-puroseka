@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 import httpx
 from app.config import settings
@@ -7,6 +8,34 @@ from app.metering import principal, reservation_size
 
 _lock = asyncio.Lock()
 _last_call = 0.0
+QUERY_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sql": {"anyOf": [{"type": "string", "maxLength": 12000}, {"type": "null"}]},
+        "reason": {"type": "string", "maxLength": 240},
+    },
+    "required": ["sql", "reason"],
+    "additionalProperties": False,
+}
+
+
+def complete_query_plan(content):
+    """Only a complete, bounded plan can survive a provider length signal."""
+    try:
+        value = json.loads(content)
+    except (ValueError, TypeError):
+        return False
+    return (
+        isinstance(value, dict)
+        and set(value) == {"sql", "reason"}
+        and (
+            value["sql"] is None
+            or isinstance(value["sql"], str)
+            and len(value["sql"]) <= 12000
+        )
+        and isinstance(value["reason"], str)
+        and len(value["reason"]) <= 240
+    )
 
 
 class ModelError(Exception):
@@ -22,10 +51,17 @@ async def complete(messages, json_mode=False):
         "model": cfg.get("MISTRAL_MODEL", "ministral-8b-latest"),
         "messages": messages,
         "temperature": 0,
-        "max_tokens": 1800,
+        "max_tokens": 4096 if json_mode else 1800,
     }
     if json_mode:
-        payload["response_format"] = {"type": "json_object"}
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "query_plan",
+                "schema": QUERY_PLAN_SCHEMA,
+                "strict": True,
+            },
+        }
     call = tracing.start("model", tracing.stage_name.get(), payload)
     await tracing.publish()
     username = principal.get()
@@ -38,10 +74,13 @@ async def complete(messages, json_mode=False):
 
     try:
         if username:
+            amount = await asyncio.to_thread(
+                reservation_size, messages, payload["max_tokens"]
+            )
             reservation = await asyncio.to_thread(
                 control.reserve,
                 username,
-                reservation_size(messages, payload["max_tokens"]),
+                amount,
             )
         content, usage = await _request(payload, key, usage_charge)
         tracing.finish(call, {"content": content, "usage": usage})
@@ -102,5 +141,18 @@ async def _request(payload, key, record_usage):
                 total = usage.get("total_tokens")
                 if isinstance(total, int) and total >= 0:
                     record_usage(total)
-                return d["choices"][0]["message"]["content"], d.get("usage", {})
+                choice = d["choices"][0]
+                content = choice["message"]["content"]
+                plan_mode = (
+                    payload.get("response_format", {}).get("type") == "json_schema"
+                )
+                if choice.get("finish_reason") == "length" and not (
+                    plan_mode and complete_query_plan(content)
+                ):
+                    raise ModelError(
+                        "The model returned an incomplete response at its output limit. Try again."
+                    )
+                if plan_mode and not complete_query_plan(content):
+                    raise ModelError("The model returned an invalid query plan.")
+                return content.strip(), usage
     raise ModelError("Mistral did not return a completion.")

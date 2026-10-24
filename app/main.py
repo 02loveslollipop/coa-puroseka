@@ -1,4 +1,6 @@
 import asyncio
+import logging
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Literal
 from fastapi import FastAPI, HTTPException, Depends, Request, Response, BackgroundTasks
@@ -11,8 +13,32 @@ from app.database import preview, connection, physical_schema
 from app.inference import infer
 from app import auth, control, tracing
 from app.metering import principal
+from app.demo import DEMO_USERNAME
 
-app = FastAPI(title="Puroseka Semantic Context PoC", version="1.0.0")
+
+async def retention_loop():
+    while True:
+        try:
+            await asyncio.to_thread(control.clean_demo_jobs)
+        except Exception:
+            logging.getLogger(__name__).warning("Demo retention cleanup will retry.")
+        await asyncio.sleep(600)
+
+
+@asynccontextmanager
+async def lifespan(app):
+    await asyncio.to_thread(control.interrupt_jobs)
+    maintenance = asyncio.create_task(retention_loop())
+    try:
+        yield
+    finally:
+        maintenance.cancel()
+        with suppress(asyncio.CancelledError):
+            await maintenance
+
+
+app = FastAPI(title="Puroseka Semantic Context PoC", version="1.1.0", lifespan=lifespan)
+
 _inflight = asyncio.Semaphore(2)
 
 
@@ -92,10 +118,24 @@ def token_usage(user=Depends(auth.current_user)):
 
 
 @app.put("/api/admin/token-policy")
-def token_policy(body: LimitRequest, user=Depends(auth.admin_user)):
+def token_policy(
+    body: LimitRequest,
+    account: Literal["self", "demo"] = "self",
+    user=Depends(auth.admin_user),
+):
     return control.update_limit(
-        user["username"], body.enabled, body.token_limit, body.window_seconds
+        DEMO_USERNAME if account == "demo" else user["username"],
+        body.enabled,
+        body.token_limit,
+        body.window_seconds,
     )
+
+
+@app.get("/api/admin/token-policy")
+def read_token_policy(
+    account: Literal["self", "demo"] = "self", user=Depends(auth.admin_user)
+):
+    return control.usage(DEMO_USERNAME if account == "demo" else user["username"])
 
 
 async def run_job(job, user, body, audience):
@@ -138,7 +178,8 @@ async def run_job(job, user, body, audience):
                 )
                 if k in result
             }
-        result["_review"] = review
+        if user["username"] != DEMO_USERNAME:
+            result["_review"] = review
         result["_activity"] = tracing.activity(trace)
         await asyncio.to_thread(control.finish_job, job, jsonable_encoder(result))
     except Exception:
