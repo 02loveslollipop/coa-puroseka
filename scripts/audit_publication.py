@@ -5,6 +5,7 @@ supplied through PRIVATE_REFERENCE_ENV; its values never appear in the report.
 """
 
 import configparser
+import hashlib
 import json
 import netrc
 import os
@@ -62,6 +63,13 @@ JSON_FILES = {
     "web/package.json",
     "web/package-lock.json",
     "web/tsconfig.json",
+}
+# User-supplied architecture artwork, visually reviewed after rendering. Keep
+# this exception scoped to these exact bytes; every other PNG remains blocked.
+REVIEWED_PNGS = {
+    "docs/Main.png": {
+        "57f1a3508d406d2b4dcbc59a351cf47814cf1784e2bbcbda6f399c65b4e55302",
+    },
 }
 
 
@@ -142,6 +150,11 @@ def audit():
             findings.append((path, "outside source allowlist"))
         if p.suffix == ".json" and path not in JSON_FILES:
             findings.append((path, "unexpected JSON artifact"))
+        raw = subprocess.check_output(["git", "cat-file", "blob", oid], cwd=ROOT)
+        if path in REVIEWED_PNGS:
+            if hashlib.sha256(raw).hexdigest() not in REVIEWED_PNGS[path]:
+                findings.append((path, "unreviewed architecture image contents"))
+            continue
         if p.suffix in {
             ".gz",
             ".csv",
@@ -159,7 +172,6 @@ def audit():
             ".png",
         }:
             findings.append((path, "private data or binary format"))
-        raw = subprocess.check_output(["git", "cat-file", "blob", oid], cwd=ROOT)
         try:
             text = raw.decode()
         except UnicodeDecodeError:

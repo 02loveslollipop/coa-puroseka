@@ -10,6 +10,12 @@ A small adaptation of [AWS Context Ontology Accelerator v0.3.7](https://github.c
 
 The demonstration compares the same Mistral model and PostgreSQL query tool with **physical schema only** and with an additional **fixed ontology, semantic catalog, and domain NL2SQL examples**. It does not assume the enriched agent always wins. Inspect the generated query and returned rows rather than treating model wording as verified evidence.
 
+## AWS target architecture
+
+[![AWS target architecture](docs/Main.png)](docs/Main.svg)
+
+Target architecture with separate chat, login and ontology applications. The current CloudFormation implementation runs one ECS application; this service split is not deployed.
+
 ## What the prepared PoC supports
 
 - All five supplied metadata files, including their complete original JSON records: 180 events, 1,229 cards, 26 characters, 950 event–card associations, and 815 gachas.
