@@ -12,24 +12,15 @@ from fastapi import HTTPException, Request
 
 from app.config import settings
 from app.demo import DEMO_USERNAME
+from app.passwords import (
+    password_hash as password_hash,
+    password_matches as password_matches,
+    password_needs_rehash,
+)
 from app.control import account, control_connection, utcnow
 
 COOKIE = "coa_session"
 SESSION_SECONDS = 3600
-
-
-def password_hash(password, salt=None):
-    salt = salt or secrets.token_hex(16)
-    digest = hashlib.scrypt(password.encode(), salt=salt.encode(), n=16384, r=8, p=1)
-    return salt + ":" + digest.hex()
-
-
-def password_matches(password, encoded):
-    try:
-        salt, _ = encoded.split(":", 1)
-        return hmac.compare_digest(password_hash(password, salt), encoded)
-    except (ValueError, AttributeError):
-        return False
 
 
 def fingerprint(value):
@@ -64,7 +55,11 @@ def login(username, password, ip):
     cfg = settings()
     user = account(username)
     valid = False
-    if cfg.get("AUTH_PROVIDER", "local") == "cognito" and username != DEMO_USERNAME:
+    local_auth = (
+        cfg.get("AUTH_PROVIDER", "local") != "cognito" or username == DEMO_USERNAME
+    )
+    encoded = None
+    if not local_auth:
         client_id, client_secret = (
             cfg["COGNITO_CLIENT_ID"],
             cfg["COGNITO_CLIENT_SECRET"],
@@ -104,15 +99,32 @@ def login(username, password, ip):
                     503, "Sign-in is temporarily unavailable. Try again."
                 ) from exc
     else:
-        # Same work for unknown accounts to avoid a fast username-existence oracle.
-        encoded = (
-            user["password_hash"] if user else password_hash(secrets.token_urlsafe(32))
-        )
+        # Unknown accounts also perform a password verification.
+        encoded = user["password_hash"] if user else None
         valid = password_matches(password, encoded)
     if not valid or not user or not user["enabled"]:
         raise HTTPException(401, "The email or password is incorrect.")
     token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     with control_connection() as conn:
+        current = conn.execute(
+            "SELECT * FROM control.accounts WHERE username=%s FOR UPDATE", (username,)
+        ).fetchone()
+        if (
+            not current
+            or not current["enabled"]
+            or (
+                local_auth
+                and current["password_hash"] != encoded
+                and not password_matches(password, current["password_hash"])
+            )
+        ):
+            raise HTTPException(401, "The email or password is incorrect.")
+        if local_auth and password_needs_rehash(current["password_hash"]):
+            conn.execute(
+                "UPDATE control.accounts SET password_hash=%s WHERE username=%s",
+                (password_hash(password), username),
+            )
+        user = current
         conn.execute("DELETE FROM control.sessions WHERE expires_at < now()")
         conn.execute(
             "INSERT INTO control.sessions(token_hash,username,csrf,expires_at) VALUES (%s,%s,%s,%s)",

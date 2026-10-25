@@ -1,6 +1,7 @@
 """AWS feature parity using a disposable local database, never the lab database."""
 
 import ast
+import hashlib
 from datetime import timedelta
 import os
 from pathlib import Path
@@ -180,6 +181,38 @@ def test_source_reads_only_and_control_still_writable(scratch):
     assert control.usage(DEMO_USERNAME)["used_tokens"] == 1259
 
 
+def test_cognito_admin_authentication_does_not_rehash_local_password(
+    scratch, monkeypatch
+):
+    monkeypatch.setitem(settings(), "AUTH_PROVIDER", "cognito")
+    monkeypatch.setitem(settings(), "COGNITO_CLIENT_ID", "test-client")
+    monkeypatch.setitem(settings(), "COGNITO_CLIENT_SECRET", "test-client-secret")
+    with psycopg.connect(scratch) as conn:
+        conn.execute(
+            "UPDATE control.accounts SET password_hash=NULL WHERE username='aws-admin@example.test'"
+        )
+
+    class Cognito:
+        def initiate_auth(self, **kwargs):
+            return {"AuthenticationResult": {"AccessToken": "test-access-token"}}
+
+        def get_user(self, **kwargs):
+            return {"Username": "aws-admin@example.test"}
+
+    monkeypatch.setattr(auth.boto3, "client", lambda *a, **k: Cognito())
+    token, identity = auth.login(
+        "aws-admin@example.test", "Cognito-only-password", "127.0.0.1"
+    )
+    assert token and identity["role"] == "admin"
+    with psycopg.connect(scratch) as conn:
+        assert (
+            conn.execute(
+                "SELECT password_hash FROM control.accounts WHERE username='aws-admin@example.test'"
+            ).fetchone()[0]
+            is None
+        )
+
+
 def test_operator_setup_preserves_policy_and_restricts_account_writes(
     scratch, monkeypatch
 ):
@@ -210,11 +243,34 @@ def test_operator_setup_preserves_policy_and_restricts_account_writes(
         control.settle(DEMO_USERNAME, reservation, 25)
         for statement in (
             "UPDATE control.accounts SET role='admin' WHERE username='demo@02labs.me'",
-            "UPDATE control.accounts SET password_hash='poisoned' WHERE username='demo@02labs.me'",
+            "UPDATE control.accounts SET enabled=false WHERE username='demo@02labs.me'",
         ):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 with psycopg.connect(runtime) as conn:
                     conn.execute(statement)
+        # A legacy login upgrades only the permitted hash column.
+        salt = "01" * 16
+        legacy = (
+            salt
+            + ":"
+            + hashlib.scrypt(b"demo1234", salt=salt.encode(), n=16384, r=8, p=1).hex()
+        )
+        with psycopg.connect(scratch) as owner:
+            owner.execute(
+                "UPDATE control.accounts SET password_hash=%s WHERE username=%s",
+                (legacy, DEMO_USERNAME),
+            )
+        before = control.usage(DEMO_USERNAME)
+        login(DEMO_USERNAME, "demo1234")
+        assert control.usage(DEMO_USERNAME) == before
+        with psycopg.connect(runtime) as conn:
+            current = conn.execute(
+                "SELECT password_hash FROM control.accounts WHERE username=%s",
+                (DEMO_USERNAME,),
+            ).fetchone()[0]
+        assert current.startswith("$argon2id$") and auth.password_matches(
+            "demo1234", current
+        )
     finally:
         with psycopg.connect(scratch) as owner:
             if owner.execute(

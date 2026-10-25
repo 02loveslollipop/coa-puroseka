@@ -142,7 +142,7 @@ def run():
         )
         conn.execute(
             sql.SQL(
-                "GRANT UPDATE(limit_enabled,token_limit,window_seconds) ON control.accounts TO {}"
+                "GRANT UPDATE(limit_enabled,token_limit,window_seconds,password_hash) ON control.accounts TO {}"
             ).format(sql.Identifier(role))
         )
         conn.execute(
