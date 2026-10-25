@@ -17,7 +17,8 @@ from app.passwords import (
     password_matches as password_matches,
     password_needs_rehash,
 )
-from app.control import account, control_connection, utcnow
+from app.auth_database import login_connection
+from app.control import utcnow
 
 COOKIE = "coa_session"
 SESSION_SECONDS = 3600
@@ -37,7 +38,7 @@ def login(username, password, ip):
     username = username.strip().lower()
     attempt_key = fingerprint(ip)
     # Durable attempt limit also covers nonexistent accounts and Cognito outages.
-    with control_connection() as conn:
+    with login_connection() as conn:
         row = conn.execute(
             "INSERT INTO control.login_attempts(key,attempts,resets_at) VALUES (%s,1,%s) "
             "ON CONFLICT (key) DO UPDATE SET "
@@ -53,7 +54,11 @@ def login(username, password, ip):
             headers={"Retry-After": "900"},
         )
     cfg = settings()
-    user = account(username)
+    with login_connection() as conn:
+        user = conn.execute(
+            "SELECT username,role,password_hash,enabled FROM control.accounts WHERE username=%s",
+            (username,),
+        ).fetchone()
     valid = False
     local_auth = (
         cfg.get("AUTH_PROVIDER", "local") != "cognito" or username == DEMO_USERNAME
@@ -105,9 +110,10 @@ def login(username, password, ip):
     if not valid or not user or not user["enabled"]:
         raise HTTPException(401, "The email or password is incorrect.")
     token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    with control_connection() as conn:
+    with login_connection() as conn:
         current = conn.execute(
-            "SELECT * FROM control.accounts WHERE username=%s FOR UPDATE", (username,)
+            "SELECT username,role,password_hash,enabled FROM control.accounts WHERE username=%s FOR UPDATE",
+            (username,),
         ).fetchone()
         if (
             not current
@@ -142,7 +148,7 @@ def current_user(request: Request):
     token = request.cookies.get(COOKIE, "")
     if not token:
         raise HTTPException(401, "Sign in to continue.")
-    with control_connection() as conn:
+    with login_connection() as conn:
         row = conn.execute(
             "SELECT a.username,a.role,s.csrf FROM control.sessions s JOIN control.accounts a "
             "ON a.username=s.username WHERE s.token_hash=%s AND s.expires_at > now() AND a.enabled",
@@ -171,7 +177,7 @@ def admin_user(request: Request):
 
 
 def logout(request: Request):
-    with control_connection() as conn:
+    with login_connection() as conn:
         conn.execute(
             "DELETE FROM control.sessions WHERE token_hash=%s",
             (fingerprint(request.cookies.get(COOKIE, "")),),

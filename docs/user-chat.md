@@ -38,7 +38,7 @@ The account comes from `CHAT_USERNAME` and `CHAT_PASSWORD` in `.env`; `ADMIN_USE
 
 The backend exchanges credentials with Cognito, confirms the returned identity, and issues a random opaque browser session. Only the session's SHA-256 digest is stored in PostgreSQL. Sessions expire after one hour, can be revoked by signing out, and use `Secure`, `HttpOnly`, `SameSite=Strict` cookies over the deployed HTTPS endpoint. State-changing requests require the expected `Origin` and a session CSRF token. Login attempts are throttled persistently.
 
-Local development has a fixed-account fallback using salted scrypt password hashes. A deployed Cognito outage does **not** trigger a fallback to password authentication. Cognito was available and is the deployed provider.
+Local development has a fixed-account fallback using salted Argon2id password hashes with successful-login upgrades from legacy scrypt. A deployed Cognito outage does **not** trigger a fallback to password authentication. Cognito was available and is the deployed provider.
 
 ```mermaid
 flowchart LR
@@ -48,7 +48,8 @@ flowchart LR
     ALB --> App[ECS application]
     App --> Cognito
     App -->|SELECT-only role| Data[PostgreSQL data schema]
-    App -->|Separate control role| State[Sessions, policy, token ledger]
+    App -->|Login role| Sessions[Accounts and sessions]
+    App -->|Chat role| State[Policy, token ledger and response jobs]
 ```
 
 The HTTP leg after API Gateway stays inside the VPC. The load balancer accepts only the VPC-link security group; ECS accepts it through a separate security-group rule. The original `/32` diagnostic access is retained. CloudFront and Cloud Map creation were restricted by this Learner Lab, so the deployed gateway uses the internal load balancer.
@@ -63,11 +64,14 @@ Explicit rejected provider requests are not charged. Unknown usage, timeouts and
 
 ## Deployment
 
-```bash
-.venv/bin/python scripts/aws.py deploy --app-only --configure-access
-```
+1. Refresh the Learner Lab AWS CLI credentials.
+2. Set the private administrator credentials in `.env`.
+3. Run the CloudFormation application/access update:
 
-This provisions `infra/auth.yaml` and `infra/gateway.yaml`, updates `infra/stack.yaml`, and runs `scripts.setup_access` once in a transient ECS task using the administrative credential. It preserves all source data and the selected model. The migration seeds a new account with limits disabled and preserves an existing policy on subsequent runs. Temporary provisioning credentials are removed from the current administrative secret version after migration; Cognito runtime does not need the user's password.
+   ```bash
+   .venv/bin/python scripts/aws.py deploy --app-only --configure-access
+   .venv/bin/python scripts/aws.py status
+   ```
 
 Application updates retain the previous healthy ECS task until its replacement is healthy. A deployment can temporarily run two small tasks, while the steady-state service runs one. Shared database sessions, job results and token accounting work across both tasks.
 

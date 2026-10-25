@@ -73,7 +73,8 @@ def scratch(monkeypatch):
                     (username,),
                 )
         monkeypatch.setitem(settings(), "DATABASE_URL", scratch_url)
-        monkeypatch.setitem(settings(), "CONTROL_DATABASE_URL", scratch_url)
+        monkeypatch.setitem(settings(), "LOGIN_DATABASE_URL", scratch_url)
+        monkeypatch.setitem(settings(), "CHAT_DATABASE_URL", scratch_url)
         monkeypatch.setitem(settings(), "AUTH_PROVIDER", "local")
         monkeypatch.setitem(settings(), "PUBLIC_ORIGIN", "http://testserver")
         yield scratch_url
@@ -219,17 +220,20 @@ def test_operator_setup_preserves_policy_and_restricts_account_writes(
     from scripts import setup_access
     from psycopg.conninfo import make_conninfo
 
-    role = "coa_control_test_" + uuid4().hex[:10]
-    runtime = make_conninfo(scratch, user=role, password="Local-test-password-7")
-    # The operator script expects a URL so its username/password can be parsed.
-    parts = urlsplit(scratch)
-    runtime_url = urlunsplit(
-        parts._replace(
-            netloc=f"{role}:Local-test-password-7@{parts.hostname}:{parts.port}"
+    roles = {
+        service: "coa_aws_" + service + "_" + uuid4().hex[:10]
+        for service in ("query", "login", "chat")
+    }
+    urls = {
+        service: make_conninfo(
+            scratch, user=role, password="Local-" + service + "-password-7"
         )
-    )
+        for service, role in roles.items()
+    }
     monkeypatch.setitem(settings(), "ADMIN_DATABASE_URL", scratch)
-    monkeypatch.setitem(settings(), "CONTROL_DATABASE_URL", runtime_url)
+    monkeypatch.setitem(settings(), "DATABASE_URL", urls["query"])
+    monkeypatch.setitem(settings(), "LOGIN_DATABASE_URL", urls["login"])
+    monkeypatch.setitem(settings(), "CHAT_DATABASE_URL", urls["chat"])
     monkeypatch.setitem(settings(), "ADMIN_USERNAME", "aws-admin@example.test")
     monkeypatch.setitem(settings(), "ADMIN_PASSWORD", "Local-test-password-7")
     monkeypatch.delitem(settings(), "ADMIN_SECRET_ARN", raising=False)
@@ -246,7 +250,7 @@ def test_operator_setup_preserves_policy_and_restricts_account_writes(
             "UPDATE control.accounts SET enabled=false WHERE username='demo@02labs.me'",
         ):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
-                with psycopg.connect(runtime) as conn:
+                with psycopg.connect(urls["chat"]) as conn:
                     conn.execute(statement)
         # A legacy login upgrades only the permitted hash column.
         salt = "01" * 16
@@ -263,7 +267,7 @@ def test_operator_setup_preserves_policy_and_restricts_account_writes(
         before = control.usage(DEMO_USERNAME)
         login(DEMO_USERNAME, "demo1234")
         assert control.usage(DEMO_USERNAME) == before
-        with psycopg.connect(runtime) as conn:
+        with psycopg.connect(urls["login"]) as conn:
             current = conn.execute(
                 "SELECT password_hash FROM control.accounts WHERE username=%s",
                 (DEMO_USERNAME,),
@@ -273,8 +277,11 @@ def test_operator_setup_preserves_policy_and_restricts_account_writes(
         )
     finally:
         with psycopg.connect(scratch) as owner:
-            if owner.execute(
-                "SELECT 1 FROM pg_roles WHERE rolname=%s", (role,)
-            ).fetchone():
-                owner.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
-                owner.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+            for role in roles.values():
+                if owner.execute(
+                    "SELECT 1 FROM pg_roles WHERE rolname=%s", (role,)
+                ).fetchone():
+                    owner.execute(
+                        sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role))
+                    )
+                    owner.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))

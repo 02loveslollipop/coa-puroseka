@@ -30,7 +30,8 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
 # Set MISTRAL_API_KEY and an available MISTRAL_MODEL in .env.
-# Also set CHAT_USERNAME (email), CHAT_PASSWORD, and CONTROL_DATABASE_URL.
+# Set CHAT_USERNAME (email), CHAT_PASSWORD, and the four database URLs.
+# For Docker PostgreSQL, use port 54329 and its configured operator password.
 .venv/bin/python scripts/prepare.py
 .venv/bin/python scripts/enrich_once.py
 .venv/bin/python scripts/prepare_rankings.py
@@ -38,12 +39,8 @@ cp .env.example .env
 npm --prefix web ci
 npm --prefix web run build
 docker compose up -d db
-DATABASE_URL='postgresql://puroseka_reader:local-reader-only@127.0.0.1:54329/puroseka' \
-ADMIN_DATABASE_URL='postgresql://postgres:local-development-only@127.0.0.1:54329/puroseka' \
 .venv/bin/python -m scripts.import_data
-ADMIN_DATABASE_URL='postgresql://postgres:local-development-only@127.0.0.1:54329/puroseka' \
 .venv/bin/python -m scripts.setup_access
-DATABASE_URL='postgresql://puroseka_reader:local-reader-only@127.0.0.1:54329/puroseka' \
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -55,27 +52,39 @@ The original configured `mistral-medium-latest` and `mistral-small-latest` retur
 
 ## Deploy to Learner Lab
 
-The active AWS CLI credentials must belong to the lab. They are never copied into the image. The deployed task uses the existing `LabRole`, and the database has no publicly accessible endpoint.
+1. Update the AWS CLI credentials from Learner Lab and select `us-east-1`.
 
-```bash
-.venv/bin/python scripts/aws.py bootstrap
-.venv/bin/python scripts/aws.py wait
-.venv/bin/python scripts/aws.py deploy --configure-access
-.venv/bin/python scripts/aws.py status
-```
+2. Set `MISTRAL_API_KEY`, `MISTRAL_MODEL`, `CHAT_USERNAME` and `CHAT_PASSWORD` in `.env`.
 
-`bootstrap` creates the foundation, including RDS; `deploy` publishes prepared artifacts, stores server-side credentials, builds/pushes the image, creates the service with zero web tasks, runs the importer, then updates CloudFormation to start the web task. The importer uses 1 vCPU/3 GB transiently; the web service uses 0.5 vCPU/1 GB. The application reads metadata with a SELECT-only PostgreSQL role; the administrative credential is supplied only to the import task.
+3. For a new installation, prepare the dataset using the local setup commands, then provision the foundation:
 
-`--configure-access` provisions the Cognito and HTTPS stacks, seeds the shared account from `CHAT_USERNAME`/`CHAT_PASSWORD` (or the `ADMIN_` equivalents), and runs a separate, idempotent control-schema migration. It never reimports source data when combined with `--app-only`. The runtime control role can update sessions, usage, and policies but cannot read the source data; the query role cannot read the control schema. See [authentication and token metering](docs/user-chat.md).
+   ```bash
+   .venv/bin/python scripts/aws.py bootstrap
+   .venv/bin/python scripts/aws.py wait
+   ```
 
-The first bootstrap detects the demonstrator's public IP and permits TCP 8000 only from that `/32`. To update it after an IP change:
+4. Build and deploy through CloudFormation. For an existing installation, run:
 
-```bash
-.venv/bin/python scripts/aws.py bootstrap --browser-cidr YOUR.PUBLIC.IP.ADDRESS/32
-.venv/bin/python scripts/aws.py wait
-```
+   ```bash
+   .venv/bin/python scripts/aws.py deploy --app-only --configure-access
+   ```
 
-Use the stable HTTPS address printed by `status` for both chat and administration. Cognito sign-in is required; the application uses secure, HTTP-only cookies and CSRF checks. The private load balancer has no internet-facing listener. The original task HTTP address remains restricted to the configured `/32` for operator diagnostics; browser login uses the HTTPS endpoint.
+   For a new installation, run `.venv/bin/python scripts/aws.py deploy --configure-access` instead.
+
+5. Check status and open the HTTPS address printed by:
+
+   ```bash
+   .venv/bin/python scripts/aws.py status
+   ```
+
+6. For later application updates, run `.venv/bin/python scripts/aws.py deploy --app-only`.
+
+7. To change diagnostic access after an IP change, run:
+
+   ```bash
+   .venv/bin/python scripts/aws.py bootstrap --browser-cidr YOUR.PUBLIC.IP.ADDRESS/32
+   .venv/bin/python scripts/aws.py wait
+   ```
 
 ## Across lab sessions
 
@@ -100,13 +109,11 @@ The small Fargate task, RDS instance, storage, public IPv4 and secrets remain bi
 ## Verification
 
 ```bash
-TEST_DATABASE=1 \
-DATABASE_URL='postgresql://puroseka_reader:local-reader-only@127.0.0.1:54329/puroseka' \
 .venv/bin/python -m pytest -q
 npm --prefix web run build
 ```
 
-Tests cover source counts, ontology parsing/mappings, Japanese text, the event competition boundary, agent context isolation, model failures, SQL validation and database privileges. PostgreSQL integration tests skip unless `TEST_DATABASE=1` is set.
+Set `LOCAL_TEST_DATABASE_URL` to a disposable local PostgreSQL operator connection to run database-role and AWS parity tests. These create and remove temporary databases. Legacy imported-dataset tests additionally require `TEST_DATABASE=1` and a configured local dataset.
 
 In the playground, compare:
 
@@ -124,6 +131,16 @@ Source-grounded answers for questions 1 and 3 are character IDs **1, 2, 3, 4, 24
 `GET /api/health` is the public health probe. Catalog, schema, manifest, source tables, translations, ontology and detailed inference require an administrator session. `POST /api/inference` accepts `{question, mode: "base" | "enriched", history: [{role, content}]}` and returns context, query, bounded evidence and response details for the COA. Both UIs submit asynchronous inference jobs and poll their result, avoiding API Gateway's request timeout. `/api/chat/jobs` accepts `mode: "base" | "enriched"` (default enriched) and returns a user response and timing/usage metrics without SQL or prompt traces. The user chat's A/B mode submits the same question to both variants with empty histories. FastAPI's `/docs` exposes the typed API contract; its protected operations still require authentication and CSRF headers.
 
 Each answer has a separate **Tool activity** timeline before its bubble, with live execution status. In the chat sidebar, **Review mode** adds recorded input/output JSON to that timeline and executed SQL/results inside the answer bubble, using `GET /api/jobs/{id}/review`. This endpoint checks ownership and administrator access; ordinary responses expose only safe step summaries. Opening a review does not invoke the model again. See [user chat and review details](docs/user-chat.md).
+
+The ECS application uses three independent PostgreSQL logins, stored server-side in Secrets Manager:
+
+| Connection | Access |
+| --- | --- |
+| `DATABASE_URL` / `puroseka_reader` | SELECT on the 16 approved tables in `data` |
+| `LOGIN_DATABASE_URL` / `puroseka_login` | Authentication columns, password-hash updates, sessions and login attempts |
+| `CHAT_DATABASE_URL` / `puroseka_chat` | Policy columns, token budgets, reservations and response jobs |
+
+The database operator credential is supplied only to migration/import tasks. Runtime roles cannot create schema objects, manage roles, change account roles/enablement, or switch to each other. The query role defaults to read-only transactions. Application-only updates require the separate credentials; rerunning access setup preserves passwords for the database roles and existing token consumption. AWS retains one ECS application; these credentials separate its database operations.
 
 Only a single validated SELECT can reach the query connection. Imported-table and SQL-function allowlists, SELECT-only grants, read-only transactions, a fifteen-second statement timeout, and row/evidence-size limits constrain execution. Raw database errors and credentials are not sent to the model or browser. Model-generated language can still be wrong: SQL and evidence remain visible for assessment. Request traces contain supplied prompts and returned evidence, not hidden model reasoning.
 
@@ -156,9 +173,9 @@ The diagram was regenerated from the supplied Turtle schema and screenshot: 16 c
 
 The public chat-only demo uses `demo@02labs.me` / `demo1234`. Its initial AWS allowance is 100,000 tokens per six-hour window, configurable in **Manage → Token limits → Public demo**. Demo authentication uses the local password hash even when the private administrator uses Cognito. Existing accounts, policies, consumed tokens and active reservations are preserved by setup. Demo responses expire after 24 hours; raw prompts, history and full Review traces are excluded. Cleanup runs on startup and every ten minutes while the application runs.
 
-The SQL firewall rejects writes, writable CTEs, private/system tables, row locks, custom functions/operators/types and unreviewed syntax before execution. Dataset connections start read-only with a `pg_catalog` search path; physical tables are explicitly qualified in `data`. The writable `control` connection is separate. The 15-second execution, one-second lock, 100-row and 24 KB evidence limits remain in place.
+The SQL firewall rejects writes, writable CTEs, private/system tables, row locks, custom functions/operators/types and unreviewed syntax before execution. Dataset connections start read-only with a `pg_catalog` search path; physical tables are explicitly qualified in `data`. Authentication uses `LOGIN_DATABASE_URL`; chat state and token accounting use `CHAT_DATABASE_URL`. Neither can access the dataset, and chat cannot read password hashes or sessions. The 15-second execution, one-second lock, 100-row and 24 KB evidence limits remain in place.
 
 For an existing AWS installation, run the access setup with the local operator credential to seed the demo without changing existing policies. Apply [infra/daily-index.sql](infra/daily-index.sql) separately using an operator connection outside a transaction; it adds the covering UTC-day index without changing source rows. Then use the existing CloudFormation application-only deployment. `DemoTokenLimit` and `DemoWindowSeconds` provide initial task configuration; dashboard policy changes take precedence for existing accounts.
 
 
-Local passwords now use Argon2id (`argon2-cffi`, 64 MiB, three passes, one lane), with random salts and at most two concurrent hash operations. Existing scrypt passwords and outdated Argon2id parameters upgrade after a successful local login; failed or disabled logins do not rewrite hashes. Password changes are rechecked before a session is issued. Cognito-managed administrator passwords remain managed by Cognito. For existing AWS installations, the operator must rerun `scripts/setup_access.py` before deployment to grant only password-hash updates in addition to token-policy columns; runtime changes to account roles and enablement remain prohibited. AWS redeployment remains deferred.
+Local passwords now use Argon2id (`argon2-cffi`, 64 MiB, three passes, one lane), with random salts and at most two concurrent hash operations. Existing scrypt passwords and outdated Argon2id parameters upgrade after a successful local login; failed or disabled logins do not rewrite hashes. Password changes are rechecked before a session is issued. Cognito-managed administrator passwords remain managed by Cognito. The next AWS access migration provisions independent query, login and chat PostgreSQL credentials, replaces direct table/column grants, and removes the old shared control role’s application-schema access. Existing accounts, sessions, policies and usage remain in place. AWS redeployment awaits refreshed Learner Lab credentials.

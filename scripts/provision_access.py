@@ -7,6 +7,23 @@ from urllib.parse import quote
 from botocore.exceptions import ClientError
 
 from app.config import settings
+from psycopg.conninfo import conninfo_to_dict
+
+
+def runtime_databases(app, host):
+    """Reuse separate service passwords across deployments; keep values private."""
+    for key, role in (
+        ("LOGIN_DATABASE_URL", "puroseka_login"),
+        ("CHAT_DATABASE_URL", "puroseka_chat"),
+    ):
+        previous = conninfo_to_dict(app[key]) if app.get(key) else {}
+        if previous and previous.get("user") != role:
+            raise ValueError("Unexpected service database role")
+        password = previous.get("password") or secrets.token_urlsafe(48)
+        app[key] = (
+            f"postgresql://{role}:{quote(password, safe='')}@{host}:5432/puroseka?sslmode=require"
+        )
+    return app
 
 
 def configure_access(d, o):
@@ -76,11 +93,9 @@ def configure_access(d, o):
     )["UserPoolClient"]["ClientSecret"]
     sm = client("secretsmanager")
     app = json.loads(sm.get_secret_value(SecretId=o["AppSecretArn"])["SecretString"])
-    control_password = app.get("control_password") or secrets.token_urlsafe(32)
+    runtime_databases(app, o["DatabaseHost"])
     app.update(
         {
-            "control_password": control_password,
-            "CONTROL_DATABASE_URL": f"postgresql://puroseka_control:{quote(control_password, safe='')}@{o['DatabaseHost']}:5432/puroseka?sslmode=require",
             "AUTH_PROVIDER": "cognito",
             "COGNITO_USER_POOL_ID": pool,
             "COGNITO_CLIENT_ID": app_client,
@@ -112,3 +127,7 @@ def clear_seed_password(o):
     )
     secret.pop("ADMIN_PASSWORD", None)
     sm.put_secret_value(SecretId=o["AdminSecretArn"], SecretString=json.dumps(secret))
+    app = json.loads(sm.get_secret_value(SecretId=o["AppSecretArn"])["SecretString"])
+    app.pop("CONTROL_DATABASE_URL", None)
+    app.pop("control_password", None)
+    sm.put_secret_value(SecretId=o["AppSecretArn"], SecretString=json.dumps(app))

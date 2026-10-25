@@ -1,14 +1,13 @@
 """Idempotent control-schema migration; never alters the source data schema."""
 
 import json
-from urllib.parse import unquote, urlparse
 
 import psycopg
-from psycopg import sql
 
 from app.auth import password_hash
 from app.config import settings
 from app.demo import DEMO_USERNAME
+from scripts.database_roles import configure_runtime_roles, validate_credentials
 
 
 def run():
@@ -25,8 +24,9 @@ def run():
             )
         )
         admin = cfg["ADMIN_DATABASE_URL"]
-    if not admin or not cfg.get("CONTROL_DATABASE_URL"):
-        raise RuntimeError("Admin and control database connections are required")
+    if not admin:
+        raise RuntimeError("Operator database connection is required")
+    validate_credentials(cfg)
     username = (
         (cfg.get("ADMIN_USERNAME") or cfg.get("CHAT_USERNAME", "")).strip().lower()
     )
@@ -39,19 +39,7 @@ def run():
         raise RuntimeError(
             "The shared account password must contain at least 12 characters"
         )
-    parsed = urlparse(cfg["CONTROL_DATABASE_URL"])
-    role, role_password = unquote(parsed.username), unquote(parsed.password)
     with psycopg.connect(admin) as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM pg_roles WHERE rolname=%s", (role,)
-        ).fetchone()
-        conn.execute(
-            sql.SQL(
-                "ALTER ROLE {} LOGIN PASSWORD {}"
-                if exists
-                else "CREATE ROLE {} LOGIN PASSWORD {}"
-            ).format(sql.Identifier(role), sql.Literal(role_password))
-        )
         conn.execute("CREATE SCHEMA IF NOT EXISTS control")
         conn.execute("REVOKE ALL ON SCHEMA control FROM PUBLIC")
         conn.execute("""
@@ -127,29 +115,7 @@ def run():
             "INSERT INTO control.budgets(username,resets_at) SELECT username,now()+window_seconds*interval '1 second' FROM control.accounts WHERE username=%s ON CONFLICT DO NOTHING",
             (DEMO_USERNAME,),
         )
-        conn.execute(
-            sql.SQL("GRANT USAGE ON SCHEMA control TO {}").format(sql.Identifier(role))
-        )
-        conn.execute(
-            sql.SQL(
-                "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA control TO {}"
-            ).format(sql.Identifier(role))
-        )
-        conn.execute(
-            sql.SQL("REVOKE INSERT,UPDATE,DELETE ON control.accounts FROM {}").format(
-                sql.Identifier(role)
-            )
-        )
-        conn.execute(
-            sql.SQL(
-                "GRANT UPDATE(limit_enabled,token_limit,window_seconds,password_hash) ON control.accounts TO {}"
-            ).format(sql.Identifier(role))
-        )
-        conn.execute(
-            sql.SQL("ALTER ROLE {} SET statement_timeout = '10s'").format(
-                sql.Identifier(role)
-            )
-        )
+        configure_runtime_roles(conn, cfg)
     print(
         "Control schema ready; shared administrator account seeded; existing usage and policy preserved.",
         flush=True,

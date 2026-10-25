@@ -16,7 +16,7 @@ from app.demo import DEMO_USERNAME, DEMO_RETENTION_HOURS
 @contextmanager
 def control_connection():
     with psycopg.connect(
-        settings()["CONTROL_DATABASE_URL"], connect_timeout=10, row_factory=dict_row
+        settings()["CHAT_DATABASE_URL"], connect_timeout=10, row_factory=dict_row
     ) as conn:
         yield conn
 
@@ -53,17 +53,11 @@ def clean_demo_jobs():
         )
 
 
-def account(username):
-    with control_connection() as conn:
-        return conn.execute(
-            "SELECT * FROM control.accounts WHERE username=%s", (username,)
-        ).fetchone()
-
-
 def _budget(conn, username):
     """Lock order is always account, then budget; all accounting uses this path."""
     user = conn.execute(
-        "SELECT * FROM control.accounts WHERE username=%s FOR UPDATE",
+        "SELECT username,enabled,limit_enabled,token_limit,window_seconds "
+        "FROM control.accounts WHERE username=%s FOR UPDATE",
         (username,),
     ).fetchone()
     if not user or not user["enabled"]:

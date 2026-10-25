@@ -175,6 +175,20 @@ def deploy(app_only=False, configure_access=False):
     d = state()
     wait_stack(d, allow_rollback=True)
     o = outputs(d)
+    if not configure_access:
+        from scripts.database_roles import validate_credentials
+
+        current = json.loads(
+            client("secretsmanager").get_secret_value(SecretId=o["AppSecretArn"])[
+                "SecretString"
+            ]
+        )
+        try:
+            validate_credentials(current)
+        except ValueError:
+            raise RuntimeError(
+                "Run deploy --app-only --configure-access to provision separate runtime credentials first"
+            ) from None
     if configure_access:
         from scripts.provision_access import configure_access as provision_access
 
@@ -209,6 +223,7 @@ def deploy(app_only=False, configure_access=False):
         "web/package-lock.json",
         "scripts/import_data.py",
         "scripts/setup_access.py",
+        "scripts/database_roles.py",
         "artifacts/manifest.json",
         "artifacts/catalog.json",
         "artifacts/translations.json",

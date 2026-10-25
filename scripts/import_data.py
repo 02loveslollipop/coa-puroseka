@@ -6,6 +6,7 @@ import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from app.config import ARTIFACTS, settings
+from scripts.database_roles import configure_reader
 
 
 def run():
@@ -21,11 +22,6 @@ def run():
         )["ADMIN_DATABASE_URL"]
     if not admin:
         raise RuntimeError("ADMIN_DATABASE_URL or ADMIN_SECRET_ARN required")
-    import urllib.parse
-
-    parsed = urllib.parse.urlparse(cfg["DATABASE_URL"])
-    reader = parsed.username
-    password = urllib.parse.unquote(parsed.password)
     with gzip.open(ARTIFACTS / "dataset.json.gz", "rt") as f:
         payload = json.load(f)
     labels = (
@@ -166,33 +162,7 @@ def run():
                         )
                     )
                 )
-        if not conn.execute(
-            "SELECT 1 FROM pg_roles WHERE rolname=%s", (reader,)
-        ).fetchone():
-            conn.execute(
-                sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
-                    sql.Identifier(reader), sql.Literal(password)
-                )
-            )
-        else:
-            conn.execute(
-                sql.SQL("ALTER ROLE {} PASSWORD {}").format(
-                    sql.Identifier(reader), sql.Literal(password)
-                )
-            )
-        conn.execute(
-            sql.SQL("GRANT USAGE ON SCHEMA data TO {}").format(sql.Identifier(reader))
-        )
-        conn.execute(
-            sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA data TO {}").format(
-                sql.Identifier(reader)
-            )
-        )
-        conn.execute(
-            sql.SQL("ALTER ROLE {} SET statement_timeout = '15s'").format(
-                sql.Identifier(reader)
-            )
-        )
+        configure_reader(conn, cfg["DATABASE_URL"])
         conn.execute("ANALYZE")
     if (ARTIFACTS / "rankings.jsonl.gz").exists():
         with psycopg.connect(admin, autocommit=True) as maintenance:

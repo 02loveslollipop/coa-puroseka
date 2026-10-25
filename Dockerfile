@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ app/
 COPY scripts/import_data.py scripts/import_data.py
 COPY scripts/setup_access.py scripts/setup_access.py
+COPY scripts/database_roles.py scripts/database_roles.py
 COPY artifacts/*.gz artifacts/
 COPY artifacts/*.json artifacts/
 COPY artifacts/ontology.ttl artifacts/
